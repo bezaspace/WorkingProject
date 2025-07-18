@@ -1,17 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform } from 'react-native';
-import { Send, Bot, User as UserIcon, Sparkles, Heart, Brain, Leaf } from 'lucide-react-native';
-
-const dummyResponses = [
-  "Based on your symptoms, I recommend trying some ginger tea with honey. Ginger has natural anti-inflammatory properties that can help with digestive issues.",
-  "For better sleep, consider establishing a bedtime routine with chamomile tea and some gentle yoga stretches 30 minutes before bed.",
-  "Your stress levels seem elevated. I suggest practicing pranayama breathing exercises - try the 4-7-8 technique: inhale for 4, hold for 7, exhale for 8.",
-  "Turmeric is excellent for inflammation. You can add it to warm milk with a pinch of black pepper to enhance absorption.",
-  "For your energy levels, consider ashwagandha supplements. Start with a small dose in the morning and see how your body responds.",
-  "Based on your constitution, a Vata-pacifying diet would be beneficial. Focus on warm, cooked foods and avoid cold, raw items.",
-  "Try oil pulling with sesame oil in the morning. Swish for 10-15 minutes before brushing your teeth for better oral health.",
-  "Your symptoms suggest a Pitta imbalance. Cool, sweet foods like coconut water and cucumber can help restore balance.",
-];
+import { View, Text, StyleSheet, ScrollView, SafeAreaView, TouchableOpacity, TextInput, KeyboardAvoidingView, Platform, Alert } from 'react-native';
+import { Send, Bot, User as UserIcon, Sparkles, Heart, Brain, Leaf, AlertCircle } from 'lucide-react-native';
+import { geminiService } from '../../services/geminiService';
+import { ChatMessage } from '../../types/chat';
 
 const quickQuestions = [
   "What herbs help with stress?",
@@ -20,25 +11,27 @@ const quickQuestions = [
   "Yoga poses for back pain?",
 ];
 
-const initialMessages = [
+const initialMessages: ChatMessage[] = [
   {
     id: 1,
-    text: "Hello! I'm your Ayurvedic wellness assistant. I'm here to help you with natural remedies, lifestyle advice, and wellness guidance. How can I assist you today?",
+    text: "Hello! I'm your Ayurvedic wellness assistant powered by AI. I'm here to help you with natural remedies, lifestyle advice, and wellness guidance. How can I assist you today?",
     isUser: false,
     timestamp: new Date(Date.now() - 60000),
   },
 ];
 
 export default function ChatScreen() {
-  const [messages, setMessages] = useState(initialMessages);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const scrollViewRef = useRef(null);
+  const [currentStreamingMessage, setCurrentStreamingMessage] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
 
-  const sendMessage = (text = inputText) => {
-    if (!text.trim()) return;
+  const sendMessage = async (text = inputText) => {
+    if (!text.trim() || isTyping) return;
 
-    const userMessage = {
+    const userMessage: ChatMessage = {
       id: Date.now(),
       text: text.trim(),
       isUser: true,
@@ -48,20 +41,80 @@ export default function ChatScreen() {
     setMessages(prev => [...prev, userMessage]);
     setInputText('');
     setIsTyping(true);
+    setError(null);
+    setCurrentStreamingMessage('');
 
-    // Simulate AI response delay
-    setTimeout(() => {
-      const randomResponse = dummyResponses[Math.floor(Math.random() * dummyResponses.length)];
-      const aiMessage = {
-        id: Date.now() + 1,
-        text: randomResponse,
+    try {
+      // Get conversation history (excluding the message we just added since it will be sent separately)
+      const conversationHistory = messages;
+
+      // Use streaming for better UX
+      let streamingMessageId = Date.now() + 1;
+      let fullResponse = '';
+
+      const response = await geminiService.sendMessageStream(
+        text.trim(),
+        conversationHistory,
+        (chunk: string) => {
+          fullResponse += chunk;
+          setCurrentStreamingMessage(fullResponse);
+        }
+      );
+
+      // Create final AI message
+      const aiMessage: ChatMessage = {
+        id: streamingMessageId,
+        text: response.text,
         isUser: false,
         timestamp: new Date(),
       };
-      
+
       setMessages(prev => [...prev, aiMessage]);
+      setCurrentStreamingMessage('');
+
+      // Handle any errors
+      if (response.error) {
+        setError(response.error);
+        
+        // Show user-friendly error alerts for specific cases
+        if (response.error === 'API_KEY_ERROR') {
+          Alert.alert(
+            'Configuration Error',
+            'Please check your API key configuration in the .env file.',
+            [{ text: 'OK' }]
+          );
+        } else if (response.error === 'QUOTA_EXCEEDED') {
+          Alert.alert(
+            'Service Temporarily Unavailable',
+            'The AI service is experiencing high demand. Please try again in a few minutes.',
+            [{ text: 'OK' }]
+          );
+        }
+      }
+
+    } catch (error) {
+      console.error('Chat error:', error);
+      
+      // Create error message
+      const errorMessage: ChatMessage = {
+        id: Date.now() + 1,
+        text: "I'm sorry, I'm having trouble responding right now. Please check your internet connection and try again.",
+        isUser: false,
+        timestamp: new Date(),
+      };
+
+      setMessages(prev => [...prev, errorMessage]);
+      setError('CONNECTION_ERROR');
+      
+      Alert.alert(
+        'Connection Error',
+        'Unable to connect to the AI service. Please check your internet connection and try again.',
+        [{ text: 'OK' }]
+      );
+    } finally {
       setIsTyping(false);
-    }, 1500 + Math.random() * 1000);
+      setCurrentStreamingMessage('');
+    }
   };
 
   const formatTime = (date) => {
@@ -141,13 +194,39 @@ export default function ChatScreen() {
               <View style={styles.aiMessageAvatar}>
                 <Brain size={16} color="#FF8C42" />
               </View>
-              <View style={styles.typingBubble}>
-                <View style={styles.typingDots}>
-                  <View style={[styles.typingDot, styles.typingDot1]} />
-                  <View style={[styles.typingDot, styles.typingDot2]} />
-                  <View style={[styles.typingDot, styles.typingDot3]} />
+              {currentStreamingMessage ? (
+                <View style={styles.aiMessage}>
+                  <Text style={styles.aiMessageText}>
+                    {currentStreamingMessage}
+                  </Text>
+                  <View style={styles.streamingIndicator}>
+                    <View style={[styles.typingDot, styles.typingDot1]} />
+                    <View style={[styles.typingDot, styles.typingDot2]} />
+                    <View style={[styles.typingDot, styles.typingDot3]} />
+                  </View>
                 </View>
-              </View>
+              ) : (
+                <View style={styles.typingBubble}>
+                  <View style={styles.typingDots}>
+                    <View style={[styles.typingDot, styles.typingDot1]} />
+                    <View style={[styles.typingDot, styles.typingDot2]} />
+                    <View style={[styles.typingDot, styles.typingDot3]} />
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
+
+          {error && (
+            <View style={styles.errorContainer}>
+              <AlertCircle size={16} color="#FF6B6B" />
+              <Text style={styles.errorText}>
+                {error === 'API_KEY_ERROR' && 'API configuration issue'}
+                {error === 'QUOTA_EXCEEDED' && 'Service temporarily unavailable'}
+                {error === 'NETWORK_ERROR' && 'Connection problem'}
+                {error === 'CONNECTION_ERROR' && 'Unable to connect'}
+                {!['API_KEY_ERROR', 'QUOTA_EXCEEDED', 'NETWORK_ERROR', 'CONNECTION_ERROR'].includes(error) && 'Something went wrong'}
+              </Text>
             </View>
           )}
         </ScrollView>
@@ -410,5 +489,35 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     backgroundColor: '#2A2A2A',
+  },
+  
+  // Streaming and Error Styles
+  streamingIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255, 140, 66, 0.1)',
+  },
+  
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFE5E5',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    marginHorizontal: 16,
+    marginVertical: 8,
+    borderRadius: 12,
+    borderLeftWidth: 4,
+    borderLeftColor: '#FF6B6B',
+  },
+  
+  errorText: {
+    marginLeft: 8,
+    fontSize: 14,
+    color: '#D63031',
+    fontWeight: '500',
   },
 });
